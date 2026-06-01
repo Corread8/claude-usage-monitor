@@ -482,6 +482,26 @@ def fmt_time(ts):
     return " ".join(parts)
 
 
+def fmt_time_short(ts):
+    """Like fmt_time but at most two units, compact for the bar's reset field."""
+    if ts is None:
+        return "?"
+    rem = max(0, ts - time.time())
+    if rem == 0:
+        return "now"
+    d, rem = divmod(int(rem), 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    parts = []
+    if d:
+        parts.append(f"{d}d")
+    if h:
+        parts.append(f"{h}h")
+    if m and len(parts) < 2:
+        parts.append(f"{m}m")
+    return " ".join(parts[:2]) if parts else "0m"
+
+
 def bar_color(v):
     if v is None:
         return DIM
@@ -490,6 +510,50 @@ def bar_color(v):
     if v < 0.80:
         return YELLOW
     return RED
+
+
+def compute_pace(util_7d, reset_7d, now=None):
+    """Weekly pacing: how your 7-day usage compares to how much of the week has
+    elapsed, so you can see whether you're on track to spend the whole budget,
+    burning it too fast, or leaving it on the table.
+
+    Returns a dict (or None if there isn't enough data):
+      elapsed      fraction of the 7-day window gone (0..1)
+      used         fraction of the weekly budget used (0..1)
+      left         fraction still available (0..1)
+      delta        used - elapsed  (>0 = ahead / over-using, <0 = behind / surplus)
+      ratio        used / elapsed  (burn rate vs. the clock; 1.0 = exactly on pace)
+      remaining_h  hours until the weekly reset
+      per_hour     budget you can spend each remaining hour to finish at 100% (0..1)
+    """
+    if util_7d is None or not reset_7d:
+        return None
+    now = time.time() if now is None else now
+    remaining_s = max(0.0, reset_7d - now)
+    elapsed = max(0.0, min(1.0, 1.0 - remaining_s / (7 * 86400)))
+    used = max(0.0, min(1.0, util_7d))
+    left = max(0.0, 1.0 - used)
+    remaining_h = remaining_s / 3600.0
+    return {
+        "elapsed": elapsed,
+        "used": used,
+        "left": left,
+        "delta": used - elapsed,
+        "ratio": (used / elapsed) if elapsed > 0 else None,
+        "remaining_h": remaining_h,
+        "per_hour": (left / remaining_h) if remaining_h > 0 else None,
+    }
+
+
+def fmt_pace(pace):
+    """(phrase, color) summarizing pace, from compute_pace() output."""
+    delta = pace["delta"]
+    if abs(delta) < 0.03:
+        return "on pace", GREEN
+    pct = abs(delta) * 100
+    if delta < 0:
+        return f"{pct:.0f}% under pace", ACCENT          # surplus, room to use more
+    return f"{pct:.0f}% over pace", (RED if delta > 0.15 else YELLOW)
 
 
 # ---------------------------------------------------------------------------
@@ -601,6 +665,15 @@ def _print_usage_block(creds, data):
         bar = "█" * filled + "░" * (20 - filled)
         resets = f"resets in {fmt_time(reset)}" if reset else ""
         print(f"  {name:<13} {bar} {pct:5.1f}%   {resets}")
+    pace = compute_pace(data.get("7d_util"), data.get("7d_reset"))
+    if pace:
+        ratio = f" · {pace['ratio']:.2f}x burn rate" if pace["ratio"] else ""
+        print(f"  Week:    {pace['elapsed'] * 100:.0f}% elapsed · "
+              f"{pace['used'] * 100:.0f}% used · {pace['left'] * 100:.0f}% left")
+        print(f"  Pace:    {fmt_pace(pace)[0]}{ratio}")
+        if pace["per_hour"] is not None and pace["remaining_h"] >= 1:
+            print(f"  Budget:  ~{pace['per_hour'] * 100:.1f}%/h to use it all by reset "
+                  f"({pace['remaining_h']:.0f}h left)")
     if data.get("status") == "rejected":
         print("  ⚠ You are currently rate-limited.")
 
@@ -680,7 +753,7 @@ def launch_gui(_args=None):
                                  bg=BG, anchor="e", width=6)
             self._pct.grid(row=0, column=2, sticky="e")
             self._info = tk.Label(self, text="", font=(FONT, 8), fg=DIM, bg=BG,
-                                  anchor="e", width=13)
+                                  anchor="e", width=14)
             self._info.grid(row=0, column=3, sticky="e", padx=(4, 0))
 
         def set(self, util, reset_ts=None, placeholder=None):
@@ -691,7 +764,7 @@ def launch_gui(_args=None):
             else:
                 c = bar_color(util)
                 self._pct.config(text=f"{util * 100:.1f}%", fg=c)
-                self._info.config(text=f"resets {fmt_time(reset_ts)}" if reset_ts else "")
+                self._info.config(text=f"resets {fmt_time_short(reset_ts)}" if reset_ts else "")
                 self._frac, self._color = util, c
             self._draw()
 
@@ -859,6 +932,10 @@ def launch_gui(_args=None):
                        highlightthickness=0, bd=0, command=self._interval_changed
                        ).pack(side=tk.LEFT)
             tk.Label(ctrl, text="s", font=(FONT, 7), fg=DIM, bg=BG_LIGHT).pack(side=tk.LEFT)
+
+            # weekly budget detail (right side): how much is left + per-hour pace
+            self.pace_lbl = tk.Label(ctrl, text="", font=(FONT, 7), fg=DIM, bg=BG_LIGHT)
+            self.pace_lbl.pack(side=tk.RIGHT, padx=(0, 6))
 
             # body fills the middle, after the control bar has claimed the bottom
             body.pack(side=tk.TOP, fill=tk.BOTH, expand=True, padx=pad)
@@ -1078,14 +1155,18 @@ def launch_gui(_args=None):
             self.bar_7d.set(d.get("7d_util"), d.get("7d_reset"))
             if is_max_plan(self.creds):
                 self.bar_sonnet.set(d.get("sonnet_util"), d.get("sonnet_reset"), placeholder="--")
-            reset_ts = d.get("7d_reset")
-            if reset_ts:
-                remaining = max(0, reset_ts - time.time())
-                elapsed = max(0, min(100, (1.0 - remaining / (7 * 86400)) * 100))
-                self.elapsed_lbl.config(text=f"week {elapsed:.0f}% elapsed",
-                                        fg=bar_color(d.get("7d_util")))
+            pace = compute_pace(d.get("7d_util"), d.get("7d_reset"))
+            if pace:
+                phrase, color = fmt_pace(pace)
+                self.elapsed_lbl.config(
+                    text=f"week {pace['elapsed'] * 100:.0f}% · {phrase}", fg=color)
+                detail = f"left {pace['left'] * 100:.0f}%"
+                if pace["per_hour"] is not None and pace["remaining_h"] >= 1:
+                    detail += f" · {pace['per_hour'] * 100:.1f}%/h"
+                self.pace_lbl.config(text=detail)
             else:
                 self.elapsed_lbl.config(text="")
+                self.pace_lbl.config(text="")
 
         def _on_close(self):
             self._closing = True

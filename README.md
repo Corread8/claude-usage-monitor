@@ -47,6 +47,10 @@ you approach a limit.
 - **5h / 7d / Sonnet bars** with green → yellow → red color coding.
 - **Weekly heatmap.** The peak of each 5-hour block for the last 7 days, plus
   each day's contribution to your 7-day window. Builds up the longer you run it.
+- **Weekly pace tracker.** Compares how much of your 7-day budget you've used
+  against how much of the week has elapsed, so you can see at a glance whether
+  you're *over pace* (on track to run out early) or *under pace* (budget to
+  spare). It also shows how much you can spend per hour to use it all by the reset.
 - **Live countdowns** to each window reset.
 - **Resilient polling.** Exponential backoff on `HTTP 429`, instant restore of
   the last reading on restart (so the bars are never blank).
@@ -56,6 +60,29 @@ you approach a limit.
   optional; ignored if Tor isn't installed.
 - **CLI mode.** `claude-usage status` prints your usage to the terminal, handy
   for scripts, prompts, or headless boxes.
+
+## Pacing your weekly budget
+
+The 7-day window is the one that quietly bites. It resets only once a week, so
+it helps to know whether you're spending it evenly. The widget answers that:
+
+- The header shows **how much of the week has elapsed** next to a one-glance
+  verdict: **on pace**, **under pace** (you have surplus), or **over pace**
+  (you'll hit the cap before it resets).
+- The control bar shows **how much budget is left** and a **per-hour figure**,
+  how much you can spend each remaining hour to finish at exactly 100% by reset.
+- `claude-usage status` spells it out in full:
+
+  ```text
+  Week:    75% elapsed · 6% used · 94% left
+  Pace:    69% under pace · 0.08x burn rate
+  Budget:  ~2.2%/h to use it all by reset (42h left)
+  ```
+
+The **burn rate** is just `used ÷ elapsed`: `1.0x` is exactly on pace, below
+`1.0x` means you're spending your weekly budget slower than the clock (room to
+spare), and above `1.0x` means you're burning it faster than the week and will
+run dry early if you keep that pace.
 
 ## Requirements
 
