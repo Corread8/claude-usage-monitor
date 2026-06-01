@@ -1,23 +1,46 @@
 # Claude Usage Monitor
 
-A tiny, local desktop widget that shows how much of your **Claude Pro / Max**
-rate limits you've used: your **5-hour** and **7-day** windows, a **weekly
-heatmap**, and live "resets in…" countdowns. No accounts to create, no server,
-no telemetry. It just reads the login token Claude Code already keeps on your
-machine and asks Anthropic's usage endpoint for the numbers.
+**See exactly how much of your Claude Pro/Max limits you've used, _before_ you hit the wall.**
+
+A tiny, local desktop widget (and CLI) that reads the login token Claude Code
+already stores on your machine and shows your **5-hour** and **7-day** usage
+windows as live bars, with a **7-day heatmap** and "resets in…" countdowns. No
+account to create, no server, no telemetry. The only network call is to
+Anthropic's own API.
 
 ![screenshot](docs/screenshot.png)
 
-> Single Python file, **zero pip dependencies** (standard library + Tkinter).
+> Single Python file · **zero pip dependencies** (standard library + Tkinter) · MIT.
 
 ---
 
-## Why
+## Why this exists
 
-Claude Code shows you a number *after* you hit a wall. This keeps a small,
-always-available bar on your desktop so you can see how close you are to the
-5-hour and 7-day limits *before* you start a big task, and a 7-day heatmap so
-you learn your own usage rhythm over time.
+If you lean on Claude Code or a Claude Pro/Max subscription, you know the
+feeling: you kick off a big refactor or a long agent run, and mid-flow you
+hit a rate limit. Claude only tells you you're capped *after* it happens, and
+the message is a vague "resets in N hours." You can't see it coming, you can't
+tell whether it's the **5-hour** or the **7-day** window that's the bottleneck,
+and you have no idea how much headroom is left before kicking off something
+expensive.
+
+This widget fixes that one small, recurring annoyance:
+
+- **See it before you hit it.** A glanceable bar shows how close you are to each
+  limit *right now*, so you can decide whether to start that big task or wait for
+  a reset.
+- **Know which window is the constraint.** The 5-hour and 7-day limits are
+  tracked separately (plus the Sonnet-specific weekly limit on Max), so you know
+  what's actually holding you back.
+- **Learn your own rhythm.** The 7-day heatmap quietly builds a picture of when
+  you burn the most, so you can pace yourself across the week.
+- **Don't get blindsided.** It rides out Anthropic's occasional IP rate-limiting
+  with automatic backoff and an optional Tor fallback, and restores your last
+  reading instantly on restart, so the bars are never blank.
+
+It's deliberately small, a single file you can read in one sitting, and it
+stays out of your way: a quiet bar in the corner that turns yellow, then red, as
+you approach a limit.
 
 ## Features
 
