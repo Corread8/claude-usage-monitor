@@ -60,6 +60,9 @@ you approach a limit.
   optional; ignored if Tor isn't installed.
 - **CLI mode.** `claude-usage status` prints your usage to the terminal, handy
   for scripts, prompts, or headless boxes.
+- **Exportable usage log.** Every change is logged locally, so history builds
+  up the longer it runs. Export the full time series to **Markdown** or **CSV**
+  (opens in Excel) from the **Export** button or `claude-usage export`.
 
 ## Pacing your weekly budget
 
@@ -130,10 +133,12 @@ That's it. No config file required.
 | `claude-usage` | Launch the desktop widget (default). |
 | `claude-usage login` | Detect your account, validate the token, print live usage. |
 | `claude-usage status` | Print current usage once and exit (no window). |
+| `claude-usage export md\|csv [path]` | Export the recorded usage log to Markdown or CSV. |
 
 In the widget:
 
 - **Refresh.** Poll now.
+- **Export.** Save your usage log to Markdown or CSV.
 - **Tor.** Toggle routing over Tor (disabled if Tor isn't available).
 - **Pin.** Keep the window on top.
 - **every N s.** Polling interval, 30 to 900 seconds.
@@ -146,6 +151,25 @@ Copy the desktop entry and adjust the path:
 cp claude-usage.desktop ~/.local/share/applications/
 # edit Exec= to point at your checkout, or to the pipx-installed `claude-usage`
 ```
+
+## Export your usage log
+
+The widget keeps an append-only log of every *changed* reading at
+`~/.config/claude-usage-monitor/usage_log.jsonl`. The longer it runs, the
+more history you accumulate. Export it any time:
+
+- In the widget, click **Export** → choose **Markdown (.md)** or **CSV (.csv)**
+  and where to save it.
+- From the terminal:
+
+  ```bash
+  claude-usage export md            # → ./claude-usage-<date>.md
+  claude-usage export csv out.csv   # CSV opens directly in Excel / LibreOffice
+  ```
+
+Each row is a timestamped reading: plan, 5h %, 7d %, Sonnet %, the window reset
+times, and status. You can chart your usage over weeks, or audit exactly when
+you hit a limit.
 
 ## How it works
 
@@ -160,8 +184,9 @@ cp claude-usage.desktop ~/.local/share/applications/
                                                    utilization + reset times → bars + heatmap
 ```
 
-History and the last reading are cached under
-`~/.config/claude-usage-monitor/` (honors `$XDG_CONFIG_HOME`).
+History, the last reading, and the usage log live under
+`~/.config/claude-usage-monitor/` (honors `$XDG_CONFIG_HOME`), with `0600`
+permissions.
 
 ## Privacy & security
 

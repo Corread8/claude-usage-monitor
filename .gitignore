@@ -15,3 +15,7 @@ venv/
 # Local backups
 *.bak
 *.bak-*
+
+# Exported usage logs (generated; contain personal usage data)
+claude-usage-*.md
+claude-usage-*.csv

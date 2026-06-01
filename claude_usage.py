@@ -49,6 +49,7 @@ CONFIG_DIR = (Path(_XDG_CONFIG) if _XDG_CONFIG else Path.home() / ".config") / "
 HISTORY_PATH = CONFIG_DIR / "history.json"
 STATE_PATH = CONFIG_DIR / "state.json"
 USER_CONFIG_PATH = CONFIG_DIR / "config.json"
+USAGE_LOG_PATH = CONFIG_DIR / "usage_log.jsonl"
 
 USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
 OAUTH_BETA = "oauth-2025-04-20"
@@ -460,6 +461,142 @@ def save_state(rate_data, last_update_time):
 
 
 # ---------------------------------------------------------------------------
+# Usage log: append-only time series, exportable to Markdown / CSV (Excel)
+# ---------------------------------------------------------------------------
+
+# (row key, human-readable column header)
+LOG_COLUMNS = [
+    ("time", "Time"),
+    ("plan", "Plan"),
+    ("five_hour", "5h %"),
+    ("seven_day", "7d %"),
+    ("sonnet", "Sonnet %"),
+    ("five_hour_reset", "5h reset"),
+    ("seven_day_reset", "7d reset"),
+    ("status", "Status"),
+]
+
+
+def _round_util(v):
+    try:
+        return round(float(v), 4)
+    except (TypeError, ValueError):
+        return None
+
+
+def _iso_or_blank(ts):
+    if not ts:
+        return ""
+    try:
+        return datetime.fromtimestamp(float(ts)).isoformat(timespec="seconds")
+    except (TypeError, ValueError, OSError):
+        return ""
+
+
+def _read_last_jsonl(path):
+    """Return the last JSON object in a .jsonl file (cheap tail read), or None."""
+    try:
+        with open(path, "rb") as f:
+            f.seek(0, 2)
+            f.seek(max(0, f.tell() - 1024))
+            for line in reversed(f.read().decode("utf-8", "ignore").splitlines()):
+                line = line.strip()
+                if line:
+                    return json.loads(line)
+    except (OSError, json.JSONDecodeError):
+        pass
+    return None
+
+
+def append_usage_log(rate_data, plan, ts=None):
+    """Append one reading to the usage log, skipping consecutive identical rows."""
+    if not isinstance(rate_data, dict):
+        return
+    ts = time.time() if ts is None else ts
+    row = {
+        "ts": int(ts),
+        "time": datetime.fromtimestamp(ts).isoformat(timespec="seconds"),
+        "plan": plan,
+        "five_hour": _round_util(rate_data.get("5h_util")),
+        "seven_day": _round_util(rate_data.get("7d_util")),
+        "sonnet": _round_util(rate_data.get("sonnet_util")),
+        "five_hour_reset": _iso_or_blank(rate_data.get("5h_reset")),
+        "seven_day_reset": _iso_or_blank(rate_data.get("7d_reset")),
+        "status": rate_data.get("status", ""),
+    }
+    last = _read_last_jsonl(USAGE_LOG_PATH)
+    if last and (last.get("five_hour"), last.get("seven_day"), last.get("sonnet")) == \
+            (row["five_hour"], row["seven_day"], row["sonnet"]):
+        return  # unchanged since the last logged reading, don't spam the log
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    with open(USAGE_LOG_PATH, "a", encoding="utf-8") as f:
+        f.write(json.dumps(row, separators=(",", ":")) + "\n")
+    try:
+        os.chmod(USAGE_LOG_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def load_usage_log():
+    rows = []
+    try:
+        with open(USAGE_LOG_PATH, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    except OSError:
+        pass
+    return rows
+
+
+def _log_cell(key, value):
+    if key in ("five_hour", "seven_day", "sonnet"):
+        return "" if value is None else f"{value * 100:.1f}%"
+    return "" if value is None else str(value)
+
+
+def export_usage_log(fmt, path):
+    """Write the usage log to `path` as 'md' or 'csv'. Returns the row count."""
+    rows = load_usage_log()
+    fmt = fmt.lower()
+    if fmt in ("csv", "excel", "xlsx"):
+        import csv
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow([h for _, h in LOG_COLUMNS])
+            for r in rows:
+                w.writerow([_log_cell(k, r.get(k)) for k, _ in LOG_COLUMNS])
+    elif fmt in ("md", "markdown"):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f"# Claude usage log\n\n_{len(rows)} readings_\n\n")
+            f.write("| " + " | ".join(h for _, h in LOG_COLUMNS) + " |\n")
+            f.write("|" + "|".join(" --- " for _ in LOG_COLUMNS) + "|\n")
+            for r in rows:
+                f.write("| " + " | ".join(_log_cell(k, r.get(k)) for k, _ in LOG_COLUMNS) + " |\n")
+    else:
+        raise ValueError(f"unknown export format {fmt!r} (use 'md' or 'csv')")
+    return len(rows)
+
+
+def cmd_export(args):
+    rows = load_usage_log()
+    if not rows:
+        print(f"No usage recorded yet at {USAGE_LOG_PATH}.\n"
+              "Run the widget (`claude-usage`) for a while first; it logs each change.")
+        return 1
+    ext = "md" if args.format in ("md", "markdown") else "csv"
+    out = args.output or time.strftime(f"claude-usage-%Y%m%d.{ext}")
+    n = export_usage_log(args.format, out)
+    print(f"Exported {n} readings → {out}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # Formatting helpers
 # ---------------------------------------------------------------------------
 
@@ -738,32 +875,42 @@ def launch_gui(_args=None):
               "Meanwhile you can use:  claude-usage status")
         return 1
 
-    # -- compact horizontal bar: label [====   ] 42%  resets 2h 13m ----------
+    # -- tall two-row bar:  LABEL [=====      ]  72.0% 0.7200  =
+    #                                           resets 1h 15m
     class CompactBar(tk.Frame):
         def __init__(self, parent, label):
             super().__init__(parent, bg=BG)
             self.columnconfigure(1, weight=1)
             self._frac, self._color = 0.0, DIM
-            tk.Label(self, text=label, font=(FONT, 10, "bold"), fg=TEXT_BOLD,
-                     bg=BG, anchor="e", width=3).grid(row=0, column=0, padx=(0, 6), sticky="e")
-            self._canvas = tk.Canvas(self, height=12, bg=BAR_BG, highlightthickness=0, bd=0)
-            self._canvas.grid(row=0, column=1, sticky="nsew", padx=(0, 6))
+            tk.Label(self, text=label, font=(FONT, 12, "bold"), fg=TEXT_BOLD,
+                     bg=BG, anchor="e", width=3).grid(
+                row=0, column=0, rowspan=2, padx=(0, 8), sticky="e")
+            # canvas spans both rows + sticky nsew → fills the height for a tall bar
+            self._canvas = tk.Canvas(self, height=18, bg=BAR_BG, highlightthickness=0, bd=0)
+            self._canvas.grid(row=0, column=1, rowspan=2, sticky="nsew", padx=(0, 10))
             self._canvas.bind("<Configure>", lambda e: self._draw())
-            self._pct = tk.Label(self, text="--%", font=(FONT, 11, "bold"), fg=DIM,
+            self._pct = tk.Label(self, text="--%", font=(FONT, 13, "bold"), fg=DIM,
                                  bg=BG, anchor="e", width=6)
-            self._pct.grid(row=0, column=2, sticky="e")
-            self._info = tk.Label(self, text="", font=(FONT, 8), fg=DIM, bg=BG,
-                                  anchor="e", width=14)
-            self._info.grid(row=0, column=3, sticky="e", padx=(4, 0))
+            self._pct.grid(row=0, column=2, sticky="e", padx=(0, 2))
+            self._raw = tk.Label(self, text="", font=(FONT, 10), fg=DIM, bg=BG,
+                                 anchor="e", width=7)
+            self._raw.grid(row=0, column=3, sticky="e", padx=(0, 2))
+            self._info = tk.Label(self, text="", font=(FONT, 8), fg=DIM, bg=BG, anchor="e")
+            self._info.grid(row=1, column=2, columnspan=2, sticky="e", padx=(0, 2))
+            tk.Label(self, text="=", font=(FONT, 12), fg=DIM, bg=BG).grid(
+                row=0, column=4, rowspan=2, padx=(8, 2), sticky="e")
 
         def set(self, util, reset_ts=None, placeholder=None):
             if util is None:
                 self._pct.config(text=placeholder or "--%", fg=DIM)
+                self._raw.config(text="")
                 self._info.config(text="")
                 self._frac, self._color = 0.0, DIM
             else:
+                util = max(0.0, min(1.0, util))
                 c = bar_color(util)
                 self._pct.config(text=f"{util * 100:.1f}%", fg=c)
+                self._raw.config(text=f"{util:.4f}", fg=TEXT)
                 self._info.config(text=f"resets {fmt_time_short(reset_ts)}" if reset_ts else "")
                 self._frac, self._color = util, c
             self._draw()
@@ -779,13 +926,14 @@ def launch_gui(_args=None):
             if fw > 0:
                 c.create_rectangle(0, 0, fw, h, fill=self._color, outline="")
 
-    # -- 7-day x 5-block heatmap --------------------------------------------
+    # -- "Week" panel: 7 days x 5 blocks (each 5h window) + daily 7d % --------
     class WeeklyHeatmap(tk.Frame):
         def __init__(self, parent):
             super().__init__(parent, bg=BG)
-            tk.Label(self, text="Last 7 days", font=(FONT, 8, "bold"),
-                     fg=DIM, bg=BG).pack(anchor="w", pady=(0, 1))
-            self._canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0, width=230)
+            tk.Label(self, text="Week", font=(FONT, 9, "bold"),
+                     fg=DIM, bg=BG).pack(anchor="w", pady=(0, 2))
+            self._canvas = tk.Canvas(self, bg=BG, highlightthickness=0, bd=0,
+                                     width=255, height=120)
             self._canvas.pack(fill=tk.BOTH, expand=True)
             self._history = {}
             self._canvas.bind("<Configure>", lambda e: self._draw())
@@ -805,20 +953,21 @@ def launch_gui(_args=None):
             for i in range(6, -1, -1):
                 t = time.localtime(now - i * 86400)
                 days.append((time.strftime("%Y-%m-%d", t), time.strftime("%a", t)[:2], i == 0))
-            lbl_w, pct_w, gap = 22, 30, 2
+            lbl_w, pct_w, gap = 24, 34, 3
             grid_w = w - lbl_w - pct_w - 4
-            cell_w = max(4, (grid_w - 4 * gap) // 5)
-            row_h = max(8, (h - 2) // 7 - 2)
+            cell_w = max(6, (grid_w - 4 * gap) // 5)
+            row_h = max(10, (h - 2) // 7 - 3)
             y = 1
             for day_key, day_lbl, is_today in days:
                 blocks = self._history.get(day_key, {})
-                c.create_text(lbl_w - 2, y + row_h // 2, text=day_lbl,
-                              font=(FONT, 7, "bold") if is_today else (FONT, 7),
+                c.create_text(lbl_w - 3, y + row_h // 2, text=day_lbl,
+                              font=(FONT, 8, "bold") if is_today else (FONT, 8),
                               fill=TEXT_BOLD if is_today else DIM, anchor="e")
                 x = lbl_w + 2
                 for bi in range(5):
                     val = blocks.get(str(bi))
-                    c.create_rectangle(x, y, x + cell_w, y + row_h, fill=BAR_BG, outline="")
+                    # outline in BG colour gives a subtle, clean grid separation
+                    c.create_rectangle(x, y, x + cell_w, y + row_h, fill=BAR_BG, outline=BG)
                     if val and val > 0.001:
                         fw = max(1, int(cell_w * min(val, 1.0)))
                         c.create_rectangle(x, y, x + fw, y + row_h, fill=bar_color(val), outline="")
@@ -826,9 +975,9 @@ def launch_gui(_args=None):
                 start, latest = blocks.get("7d_start"), blocks.get("7d_latest")
                 if start is not None and latest is not None:
                     contrib = max(0.0, latest - start)
-                    c.create_text(x + 2, y + row_h // 2, text=f"{contrib * 100:.0f}%",
-                                  font=(FONT, 7), fill=TEXT if contrib > 0.001 else DIM, anchor="w")
-                y += row_h + 2
+                    c.create_text(x + 4, y + row_h // 2, text=f"{contrib * 100:.0f}%",
+                                  font=(FONT, 8), fill=TEXT if contrib > 0.001 else DIM, anchor="w")
+                y += row_h + 3
 
     # -- main window --------------------------------------------------------
     class App:
@@ -836,8 +985,8 @@ def launch_gui(_args=None):
             self.root = tk.Tk(className="claude_usage")
             self.root.title("Claude Usage")
             self.root.configure(bg=BG)
-            self.root.geometry("640x192")
-            self.root.minsize(560, 152)
+            self.root.geometry("780x220")
+            self.root.minsize(680, 192)
             ensure_icon()
             try:
                 self._icon = tk.PhotoImage(file=str(ICON_PATH))
@@ -875,7 +1024,7 @@ def launch_gui(_args=None):
             self.plan_lbl = tk.Label(hdr, text="Claude", font=(FONT, 11, "bold"),
                                      fg=TEXT_BOLD, bg=BG)
             self.plan_lbl.pack(side=tk.LEFT)
-            self.elapsed_lbl = tk.Label(hdr, text="", font=(FONT, 9), fg=DIM, bg=BG)
+            self.elapsed_lbl = tk.Label(hdr, text="", font=(FONT, 10, "bold"), fg=DIM, bg=BG)
             self.elapsed_lbl.pack(side=tk.LEFT, padx=(8, 0))
 
             self.status_dot = tk.Label(hdr, text="", font=(FONT, 8), fg=DIM, bg=BG)
@@ -886,20 +1035,20 @@ def launch_gui(_args=None):
             tk.Frame(self.root, bg=SEP, height=1).pack(fill=tk.X, padx=pad, pady=(3, 2))
 
             body = tk.Frame(self.root, bg=BG)
-            body.columnconfigure(0, weight=1)
-            body.columnconfigure(1, weight=2)
+            body.columnconfigure(0, weight=3)   # bars take the stretch
+            body.columnconfigure(1, weight=0)   # Week panel keeps its natural size
             body.rowconfigure(0, weight=1)
 
             bars = tk.Frame(body, bg=BG)
             bars.grid(row=0, column=0, sticky="nsew")
             self.bar_5h = CompactBar(bars, "5h")
-            self.bar_5h.pack(fill=tk.X, pady=(0, 2))
+            self.bar_5h.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
             self.bar_7d = CompactBar(bars, "7d")
-            self.bar_7d.pack(fill=tk.X, pady=(0, 2))
+            self.bar_7d.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
             self.bar_sonnet = CompactBar(bars, "So")  # packed only on Max plans
 
             self.heatmap = WeeklyHeatmap(body)
-            self.heatmap.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+            self.heatmap.grid(row=0, column=1, sticky="ns", padx=(10, 0))
             self.heatmap.update_data(self._history)
 
             # -- slim control bar (reserved at the bottom before body fills) --
@@ -910,6 +1059,12 @@ def launch_gui(_args=None):
                                      activeforeground=TEXT_BOLD, bd=0, padx=6, pady=1,
                                      command=self._manual_refresh)
             self.ref_btn.pack(side=tk.LEFT, padx=(2, 0), pady=2)
+
+            self.export_btn = tk.Button(ctrl, text="Export", font=(FONT, 7, "bold"),
+                                        fg=TEXT_BOLD, bg=BTN_BG, activebackground=BTN_HOVER,
+                                        activeforeground=TEXT_BOLD, bd=0, padx=6, pady=1,
+                                        command=self._export_menu)
+            self.export_btn.pack(side=tk.LEFT, padx=(4, 0), pady=2)
 
             self.tor_btn = tk.Button(ctrl, text="Tor", font=(FONT, 7, "bold"),
                                      fg=DIM, bg=BTN_BG, activebackground=BTN_HOVER,
@@ -952,7 +1107,7 @@ def launch_gui(_args=None):
             self.setup_lbl.pack_forget()  # clear any stale "not logged in" message
             self.plan_lbl.config(text=f"Claude {plan_label(self.creds)}", fg=TEXT_BOLD)
             if is_max_plan(self.creds):
-                self.bar_sonnet.pack(fill=tk.X, pady=(0, 2))
+                self.bar_sonnet.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
 
         def _show_setup_message(self):
             self.plan_lbl.config(text="Not logged in", fg=YELLOW)
@@ -985,6 +1140,41 @@ def launch_gui(_args=None):
             self._cooldown_until = 0.0
             self._cancel_timer()
             self._run_probe()
+
+        def _export_menu(self):
+            m = tk.Menu(self.root, tearoff=0, bg=BG_LIGHT, fg=TEXT_BOLD,
+                        activebackground=BTN_HOVER, activeforeground=TEXT_BOLD, bd=0)
+            m.add_command(label="Markdown (.md)", command=lambda: self._do_export("md"))
+            m.add_command(label="CSV for Excel (.csv)",
+                          command=lambda: self._do_export("csv"))
+            try:
+                x = self.export_btn.winfo_rootx()
+                y = self.export_btn.winfo_rooty() + self.export_btn.winfo_height()
+                m.tk_popup(x, y)
+            finally:
+                m.grab_release()
+
+        def _do_export(self, fmt):
+            from tkinter import filedialog, messagebox
+            ext = ".md" if fmt == "md" else ".csv"
+            types = [("Markdown", "*.md")] if fmt == "md" else [("CSV", "*.csv")]
+            path = filedialog.asksaveasfilename(
+                parent=self.root, title="Export usage log", defaultextension=ext,
+                initialfile=time.strftime(f"claude-usage-%Y%m%d{ext}"), filetypes=types)
+            if not path:
+                return
+            try:
+                n = export_usage_log(fmt, path)
+            except Exception as e:
+                messagebox.showerror("Export failed", str(e), parent=self.root)
+                return
+            if n == 0:
+                messagebox.showinfo(
+                    "Nothing to export yet",
+                    "No usage has been logged so far. Leave the widget running for a "
+                    "while and it records each change automatically.", parent=self.root)
+            else:
+                self.status_dot.config(text=f"exported {n} rows", fg=GREEN)
 
         def _toggle_tor(self):
             if not self._tor_supported:
@@ -1147,6 +1337,7 @@ def launch_gui(_args=None):
                                          result.get("7d_util"))
             save_history(self._history)
             save_state(self.rate_data, self.last_update_time)
+            append_usage_log(self.rate_data, plan_label(self.creds))
             self.heatmap.update_data(self._history)
 
         def _update_bars(self):
@@ -1197,12 +1388,18 @@ def main(argv=None):
     sub.add_parser("login", help="Detect your Claude account and print live usage.")
     sub.add_parser("status", help="Print current usage once and exit (no window).")
     sub.add_parser("gui", help="Launch the desktop widget (default).")
+    ex = sub.add_parser("export", help="Export the recorded usage log to Markdown or CSV.")
+    ex.add_argument("format", choices=["md", "csv"], help="output format")
+    ex.add_argument("output", nargs="?",
+                    help="output path (default: ./claude-usage-<date>.<ext>)")
 
     args = parser.parse_args(argv)
     if args.command == "login":
         return cmd_login(args)
     if args.command == "status":
         return cmd_status(args)
+    if args.command == "export":
+        return cmd_export(args)
     return launch_gui(args)
 
 
