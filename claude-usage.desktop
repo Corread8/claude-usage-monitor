@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=Claude Usage
+Comment=Live Claude Pro/Max rate-limit monitor
+# If installed with pipx (recommended), `claude-usage` is on your PATH:
+Exec=claude-usage
+# Or run the single file directly. Replace with your checkout path:
+#   Exec=python3 /path/to/claude-usage-monitor/claude_usage.py
+Icon=claude_usage
+Terminal=false
+Categories=Utility;Development;
+StartupNotify=false
