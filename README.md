@@ -134,6 +134,7 @@ That's it. No config file required.
 | `claude-usage login` | Detect your account, validate the token, print live usage. |
 | `claude-usage status` | Print current usage once and exit (no window). |
 | `claude-usage export md\|csv [path]` | Export the recorded usage log to Markdown or CSV. |
+| `claude-usage install` | Add a Linux app-menu launcher (absolute paths). |
 
 In the widget:
 
@@ -143,14 +144,16 @@ In the widget:
 - **Pin.** Keep the window on top.
 - **every N s.** Polling interval, 30 to 900 seconds.
 
-### Run it on login (Linux)
-
-Copy the desktop entry and adjust the path:
+### Add an app-menu launcher (Linux)
 
 ```bash
-cp claude-usage.desktop ~/.local/share/applications/
-# edit Exec= to point at your checkout, or to the pipx-installed `claude-usage`
+claude-usage install
 ```
+
+This writes a desktop entry to `~/.local/share/applications/` with absolute
+`Exec` and `Icon` paths, so it shows up in your app menu with its icon. The
+[`claude-usage.desktop`](claude-usage.desktop) file in the repo is a manual
+fallback if you'd rather edit it yourself.
 
 ## Export your usage log
 

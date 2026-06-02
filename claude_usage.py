@@ -1380,6 +1380,30 @@ def launch_gui(_args=None):
 # Entry point
 # ---------------------------------------------------------------------------
 
+def cmd_install(_args):
+    """Write a desktop launcher with absolute Exec and Icon paths (Linux)."""
+    ensure_icon()
+    apps_dir = Path.home() / ".local" / "share" / "applications"
+    apps_dir.mkdir(parents=True, exist_ok=True)
+    launcher = shutil.which("claude-usage")
+    exec_cmd = launcher or f"{sys.executable} {Path(__file__).resolve()}"
+    dest = apps_dir / "claude-usage.desktop"
+    dest.write_text(
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Claude Usage\n"
+        "Comment=Live Claude Pro/Max rate-limit monitor\n"
+        f"Exec={exec_cmd}\n"
+        f"Icon={ICON_PATH}\n"
+        "Terminal=false\n"
+        "Categories=Utility;Development;\n"
+        "StartupNotify=false\n"
+    )
+    print(f"Installed desktop launcher:\n  {dest}\n  Exec={exec_cmd}\n  Icon={ICON_PATH}\n"
+          'It should appear in your app menu as "Claude Usage".')
+    return 0
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="claude-usage",
@@ -1392,6 +1416,7 @@ def main(argv=None):
     ex.add_argument("format", choices=["md", "csv"], help="output format")
     ex.add_argument("output", nargs="?",
                     help="output path (default: ./claude-usage-<date>.<ext>)")
+    sub.add_parser("install", help="Install a desktop launcher (Linux app menu).")
 
     args = parser.parse_args(argv)
     if args.command == "login":
@@ -1400,6 +1425,8 @@ def main(argv=None):
         return cmd_status(args)
     if args.command == "export":
         return cmd_export(args)
+    if args.command == "install":
+        return cmd_install(args)
     return launch_gui(args)
 
 
